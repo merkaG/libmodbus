@@ -332,7 +332,6 @@ static int compute_data_length_after_meta(modbus_t *ctx, uint8_t *msg,
    and errno is set to one of the values defined below:
    - ECONNRESET
    - EMBBADDATA
-   - EMBUNKEXC
    - ETIMEDOUT
    - read() or recv() error codes
 */
@@ -556,6 +555,8 @@ static int check_confirmation(modbus_t *ctx, uint8_t *req,
         function < 0x80) {
         int req_nb_value;
         int rsp_nb_value;
+        int resp_addr_ok = TRUE;
+        int resp_data_ok = TRUE;
 
         /* Check function code */
         if (function != req[offset]) {
@@ -592,6 +593,10 @@ static int check_confirmation(modbus_t *ctx, uint8_t *req,
             break;
         case MODBUS_FC_WRITE_MULTIPLE_COILS:
         case MODBUS_FC_WRITE_MULTIPLE_REGISTERS:
+            /* address in request and response must be equal */
+            if ((req[offset + 1] != rsp[offset + 1]) || (req[offset + 2] != rsp[offset + 2])) {
+                resp_addr_ok = FALSE;
+            }
             /* N Write functions */
             req_nb_value = (req[offset + 3] << 8) + req[offset + 4];
             rsp_nb_value = (rsp[offset + 3] << 8) | rsp[offset + 4];
@@ -600,17 +605,31 @@ static int check_confirmation(modbus_t *ctx, uint8_t *req,
             /* Report slave ID (bytes received) */
             req_nb_value = rsp_nb_value = rsp[offset + 1];
             break;
+        case MODBUS_FC_WRITE_SINGLE_COIL:
+        case MODBUS_FC_WRITE_SINGLE_REGISTER:
+            /* address in request and response must be equal */
+            if ((req[offset + 1] != rsp[offset + 1]) || (req[offset + 2] != rsp[offset + 2])) {
+                resp_addr_ok = FALSE;
+            }
+            /* data in request and response must be equal */
+            if ((req[offset + 3] != rsp[offset + 3]) || (req[offset + 4] != rsp[offset + 4])) {
+                resp_data_ok = FALSE;
+            }
+            /* 1 Write functions & others */
+            req_nb_value = rsp_nb_value = 1;
+            break;
         default:
             /* 1 Write functions & others */
             req_nb_value = rsp_nb_value = 1;
+            break;
         }
 
-        if (req_nb_value == rsp_nb_value) {
+        if ((req_nb_value == rsp_nb_value) && (resp_addr_ok == TRUE) && (resp_data_ok == TRUE)) {
             rc = rsp_nb_value;
         } else {
             if (ctx->debug) {
                 fprintf(stderr,
-                        "Quantity not corresponding to the request (%d != %d)\n",
+                        "Received data not corresponding to the request (%d != %d)\n",
                         rsp_nb_value, req_nb_value);
             }
 
@@ -961,7 +980,7 @@ int modbus_reply(modbus_t *ctx, const uint8_t *req,
                 nb_write, nb, MODBUS_MAX_WR_WRITE_REGISTERS, MODBUS_MAX_WR_READ_REGISTERS);
         } else if (mapping_address < 0 ||
                    (mapping_address + nb) > mb_mapping->nb_registers ||
-                   mapping_address < 0 ||
+                   mapping_address_write < 0 ||
                    (mapping_address_write + nb_write) > mb_mapping->nb_registers) {
             rsp_length = response_exception(
                 ctx, &sft, MODBUS_EXCEPTION_ILLEGAL_DATA_ADDRESS, rsp, FALSE,
@@ -1139,7 +1158,7 @@ int modbus_read_input_bits(modbus_t *ctx, int addr, int nb, uint8_t *dest)
         return nb;
 }
 
-/* Reads the data from a remove device and put that data into an array */
+/* Reads the data from a remote device and put that data into an array */
 static int read_registers(modbus_t *ctx, int function, int addr, int nb,
                           uint16_t *dest)
 {
